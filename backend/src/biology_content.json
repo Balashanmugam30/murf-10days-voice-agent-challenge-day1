@@ -1,0 +1,26 @@
+[
+    {
+        "id": "dna",
+        "title": "DNA",
+        "summary": "DNA is the molecule that carries genetic instructions and is shaped like a double helix.",
+        "sample_question": "What is the full form of DNA and what is its structure called?"
+    },
+    {
+        "id": "cell",
+        "title": "Cell",
+        "summary": "The cell is the basic unit of life. Organisms may be unicellular or multicellular.",
+        "sample_question": "What is the difference between prokaryotic and eukaryotic cells?"
+    },
+    {
+        "id": "nucleus",
+        "title": "Nucleus",
+        "summary": "The nucleus contains the cell's DNA and controls growth and reproduction.",
+        "sample_question": "Why is the nucleus called the control center of the cell?"
+    },
+    {
+        "id": "cell_cycle",
+        "title": "Cell Cycle",
+        "summary": "The cell cycle includes Interphase and the Mitotic phase.",
+        "sample_question": "Which phase does a cell spend most of its time in?"
+    }
+]

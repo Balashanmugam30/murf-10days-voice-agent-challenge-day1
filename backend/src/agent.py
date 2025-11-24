@@ -1,9 +1,8 @@
 import logging
 import json
 import os
-from datetime import datetime
-from typing import Annotated
-from dataclasses import dataclass, field, asdict
+from typing import Annotated, Literal, Optional
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -15,192 +14,161 @@ from livekit.agents import (
     RoomInputOptions,
     WorkerOptions,
     cli,
-    metrics,
-    MetricsCollectedEvent,
-    RunContext,
     function_tool,
+    RunContext,
 )
+
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
+CONTENT_FILE = "biology_content.json"
 
-# ------------------ Check-in State ------------------
+DEFAULT_CONTENT = [
+    {
+        "id": "dna",
+        "title": "DNA",
+        "summary": "DNA is the molecule that carries genetic instructions and is shaped like a double helix.",
+        "sample_question": "What is the full form of DNA and what is its structure called?"
+    },
+    {
+        "id": "cell",
+        "title": "Cell",
+        "summary": "The cell is the basic unit of life. Organisms may be unicellular or multicellular.",
+        "sample_question": "What is the difference between prokaryotic and eukaryotic cells?"
+    },
+    {
+        "id": "nucleus",
+        "title": "Nucleus",
+        "summary": "The nucleus contains the cell's DNA and controls growth and reproduction.",
+        "sample_question": "Why is the nucleus called the control center of the cell?"
+    },
+    {
+        "id": "cell_cycle",
+        "title": "Cell Cycle",
+        "summary": "The cell cycle includes Interphase and the Mitotic phase.",
+        "sample_question": "Which phase does a cell spend most of its time in?"
+    }
+]
+
+def load_content():
+    path = os.path.join(os.path.dirname(__file__), CONTENT_FILE)
+    if not os.path.exists(path):
+        with open(path, "w", encoding='utf-8') as f:
+            json.dump(DEFAULT_CONTENT, f, indent=4)
+    with open(path, "r", encoding='utf-8') as f:
+        return json.load(f)
+
+COURSE_CONTENT = load_content()
 
 @dataclass
-class CheckInState:
-    mood: str | None = None
-    energy: str | None = None
-    objectives: list[str] = field(default_factory=list)
-    advice_given: str | None = None
+class TutorState:
+    current_topic_id: str | None = None
+    current_topic_data: dict | None = None
+    mode: Literal["learn", "quiz", "teach_back"] = "learn"
 
-    def is_complete(self):
-        return all([self.mood, self.energy, len(self.objectives) > 0])
-
-    def to_dict(self):
-        return asdict(self)
-
+    def set_topic(self, topic_id: str):
+        topic = next((t for t in COURSE_CONTENT if t["id"] == topic_id), None)
+        if topic:
+            self.current_topic_id = topic_id
+            self.current_topic_data = topic
+            return True
+        return False
 
 @dataclass
 class Userdata:
-    current_checkin: CheckInState
-    history_summary: str
-    session_start: datetime = field(default_factory=datetime.now)
-
-
-# ------------------ Persistence ------------------
-
-WELLNESS_LOG_FILE = "wellness_log.json"
-
-
-def get_log_path():
-    base = os.path.dirname(__file__)
-    backend = os.path.abspath(os.path.join(base, ".."))
-    return os.path.join(backend, WELLNESS_LOG_FILE)
-
-
-def load_history():
-    path = get_log_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except:
-        return []
-
-
-def save_checkin_entry(entry: CheckInState):
-    path = get_log_path()
-    history = load_history()
-    record = {
-        "timestamp": datetime.now().isoformat(),
-        "mood": entry.mood,
-        "energy": entry.energy,
-        "objectives": entry.objectives,
-        "summary": entry.advice_given,
-    }
-    history.append(record)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=4, ensure_ascii=False)
-
-
-# ------------------ Tools ------------------
-
-@function_tool
-async def record_mood_and_energy(
-    ctx: RunContext[Userdata],
-    mood: Annotated[str, Field(description="User mood")],
-    energy: Annotated[str, Field(description="User energy level")],
-):
-    ctx.userdata.current_checkin.mood = mood
-    ctx.userdata.current_checkin.energy = energy
-    return "Mood and energy recorded."
+    tutor_state: TutorState
+    agent_session: Optional[AgentSession] = None
 
 
 @function_tool
-async def record_objectives(
+async def select_topic(
     ctx: RunContext[Userdata],
-    objectives: Annotated[list[str], Field(description="1-3 goals for the day")],
+    topic_id: Annotated[str, Field(description="Topic ID (dna, cell, nucleus, cell_cycle)")]
 ):
-    ctx.userdata.current_checkin.objectives = objectives
-    return "Objectives recorded."
-
+    state = ctx.userdata.tutor_state
+    if state.set_topic(topic_id.lower()):
+        return f"Topic set to {state.current_topic_data['title']}. Ask if user wants Learn, Quiz, or Teach Back."
+    available = ", ".join([t["id"] for t in COURSE_CONTENT])
+    return f"Invalid topic. Available: {available}"
 
 @function_tool
-async def complete_checkin(
+async def set_learning_mode(
     ctx: RunContext[Userdata],
-    final_advice_summary: Annotated[str, Field(description="Closing summary")],
+    mode: Annotated[str, Field(description="learn, quiz, teach_back")]
 ):
-    state = ctx.userdata.current_checkin
-    state.advice_given = final_advice_summary
+    state = ctx.userdata.tutor_state
+    state.mode = mode.lower()
+    session = ctx.userdata.agent_session
 
-    if not state.is_complete():
-        return "I still need your mood, energy, and goals."
+    if session:
+        if mode == "learn":
+            session.tts.update_options(voice="en-US-matthew", style="Promo")
+            return "Learn mode enabled."
+        elif mode == "quiz":
+            session.tts.update_options(voice="en-US-alicia", style="Conversational")
+            return "Quiz mode enabled."
+        elif mode == "teach_back":
+            session.tts.update_options(voice="en-US-ken", style="Promo")
+            return "Teach-back mode enabled."
+    return "Mode switched."
 
-    save_checkin_entry(state)
-
-    recap = (
-        f"Today you are feeling {state.mood} with {state.energy} energy. "
-        f"Your goals are: {', '.join(state.objectives)}. "
-        f"Summary: {final_advice_summary}. "
-        f"Your check-in has been saved."
-    )
-    return recap
+@function_tool
+async def evaluate_teaching(
+    ctx: RunContext[Userdata],
+    user_explanation: Annotated[str, Field(description="User's explanation during teach-back")]
+):
+    return "Evaluate the explanation. Score accuracy/clarity out of 10 and give corrections."
 
 
-# ------------------ Agent ------------------
-
-class WellnessAgent(Agent):
-    def __init__(self, history_context: str):
+class TutorAgent(Agent):
+    def __init__(self):
+        topics = ", ".join([t["id"] for t in COURSE_CONTENT])
         super().__init__(
             instructions=f"""
-You are a daily wellness companion.
-Use the history context below to personalize the conversation.
+            You are a Biology Tutor.
 
-Previous history:
-{history_context}
+            Available topics: {topics}
 
-Steps:
-1. Ask for mood + energy.
-2. Ask for 1-3 goals.
-3. Provide simple non-medical advice.
-4. Call complete_checkin at the end.
+            Modes:
+            - Learn: explain the topic
+            - Quiz: ask sample question
+            - Teach_back: ask user to explain the topic
 
-Do not give medical advice or diagnoses.
+            You must:
+            1. Ask user which topic they want to study.
+            2. Call select_topic when they choose a topic.
+            3. Call set_learning_mode when they say learn/quiz/teach.
+            4. In teach_back, ask them to explain and call evaluate_teaching afterward.
             """,
-            tools=[
-                record_mood_and_energy,
-                record_objectives,
-                complete_checkin,
-            ],
+            tools=[select_topic, set_learning_mode, evaluate_teaching],
         )
 
-
-# ------------------ Entrypoint ------------------
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
-
 async def entrypoint(ctx: JobContext):
-    ctx.log_context_fields = {"room": ctx.room.name}
-
-    history = load_history()
-    if history:
-        last = history[-1]
-        history_context = (
-            f"Last check-in: {last.get('timestamp')}. "
-            f"Mood: {last.get('mood')}. Energy: {last.get('energy')}. "
-            f"Goals: {', '.join(last.get('objectives', []))}."
-        )
-    else:
-        history_context = "No previous check-ins."
-
-    userdata = Userdata(
-        current_checkin=CheckInState(),
-        history_summary=history_context
-    )
-
+    userdata = Userdata(tutor_state=TutorState())
+    
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
         tts=murf.TTS(
-            voice="en-US-natalie",
+            voice="en-US-matthew",
             style="Promo",
-            text_pacing=True,
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        userdata=userdata,
+        userdata=userdata
     )
 
+    userdata.agent_session = session
+
     await session.start(
-        agent=WellnessAgent(history_context=history_context),
+        agent=TutorAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC()
