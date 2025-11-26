@@ -1,0 +1,18 @@
+[
+    {
+        "question": "What do you sell?",
+        "answer": "We offer premium courses on Cloud Computing, Google Cloud Arcade, and Voice AI Agent development."
+    },
+    {
+        "question": "How much does the Voice AI course cost?",
+        "answer": "The Voice AI course is priced at $499."
+    },
+    {
+        "question": "Do you offer free content?",
+        "answer": "Yes, weekly tutorials are available on YouTube for free."
+    },
+    {
+        "question": "Do you do corporate consulting?",
+        "answer": "Yes, consulting is available for internal AI & voice automation projects."
+    }
+]
