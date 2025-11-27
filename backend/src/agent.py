@@ -1,9 +1,14 @@
 import logging
-import json
 import os
+import sqlite3
 from datetime import datetime
 from typing import Annotated, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
+
+print("\n" + "🛡️" * 50)
+print("🚀 BANK FRAUD AGENT (SQLite) - INITIALIZED")
+print("📚 TASKS: Verify Identity -> Check Transaction -> Update DB")
+print("🛡️" * 50 + "\n")
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -25,150 +30,262 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
-FAQ_FILE = "store_faq.json"
-LEADS_FILE = "leads_db.json"
+# ======================================================
+# 💾 1. DATABASE SETUP (SQLite)
+# ======================================================
 
-DEFAULT_FAQ = [
-    {
-        "question": "What do you sell?",
-        "answer": "We offer premium courses on Cloud Computing, Google Cloud Arcade, and Voice AI Agent development."
-    },
-    {
-        "question": "How much does the Voice AI course cost?",
-        "answer": "The Voice AI course is priced at $499."
-    },
-    {
-        "question": "Do you offer free content?",
-        "answer": "Yes, weekly tutorials are available on YouTube for free."
-    },
-    {
-        "question": "Do you do corporate consulting?",
-        "answer": "Yes, consulting is available for internal AI & voice automation projects."
-    }
-]
-
-def load_knowledge_base():
-    try:
-        path = os.path.join(os.path.dirname(__file__), FAQ_FILE)
-        if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(DEFAULT_FAQ, f, indent=4)
-        with open(path, "r", encoding="utf-8") as f:
-            return json.dumps(json.load(f))
-    except:
-        return ""
-
-STORE_FAQ_TEXT = load_knowledge_base()
+DB_FILE = "fraud_db.sqlite"
 
 @dataclass
-class LeadProfile:
-    name: str | None = None
-    company: str | None = None
-    email: str | None = None
-    role: str | None = None
-    use_case: str | None = None
-    team_size: str | None = None
-    timeline: str | None = None
+class FraudCase:
+    userName: str
+    securityIdentifier: str
+    cardEnding: str
+    transactionName: str
+    transactionAmount: str
+    transactionTime: str
+    transactionSource: str
+    case_status: str = "pending_review"
+    notes: str = ""
 
-    def is_qualified(self):
-        return all([self.name, self.email, self.use_case])
+
+def get_db_path():
+    return os.path.join(os.path.dirname(__file__), DB_FILE)
+
+
+def get_conn():
+    path = get_db_path()
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def seed_database():
+    """Create SQLite DB and insert sample rows if empty."""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ✅ FIXED SQL — CLEAN, NO BROKEN LINES
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fraud_cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            userName TEXT NOT NULL,
+            securityIdentifier TEXT,
+            cardEnding TEXT,
+            transactionName TEXT,
+            transactionAmount TEXT,
+            transactionTime TEXT,
+            transactionSource TEXT,
+            case_status TEXT DEFAULT 'pending_review',
+            notes TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+    cur.execute("SELECT COUNT(1) FROM fraud_cases")
+    if cur.fetchone()[0] == 0:
+        sample_data = [
+            (
+                "John", "12345", "4242",
+                "ABC Industry", "$450.00", "2:30 AM EST", "alibaba.com",
+                "pending_review", "Automated flag: High value transaction."
+            ),
+            (
+                "Sarah", "99887", "1199",
+                "Unknown Crypto Exchange", "$2,100.00", "4:15 AM PST", "online_transfer",
+                "pending_review", "Automated flag: Unusual location."
+            )
+        ]
+        cur.executemany(
+            """
+            INSERT INTO fraud_cases (
+                userName, securityIdentifier, cardEnding, transactionName,
+                transactionAmount, transactionTime, transactionSource, case_status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            sample_data,
+        )
+        conn.commit()
+        print(f"✅ SQLite DB seeded at {DB_FILE}")
+
+    conn.close()
+
+
+# Initialize DB on load
+seed_database()
+
+# ======================================================
+# 🧠 2. STATE MANAGEMENT
+# ======================================================
 
 @dataclass
 class Userdata:
-    lead_profile: LeadProfile
+    active_case: Optional[FraudCase] = None
+
+# ======================================================
+# 🛠️ 3. FRAUD AGENT TOOLS (SQLite-backed)
+# ======================================================
 
 @function_tool
-async def update_lead_profile(
+async def lookup_customer(
     ctx: RunContext[Userdata],
-    name: Annotated[Optional[str], Field()] = None,
-    company: Annotated[Optional[str], Field()] = None,
-    email: Annotated[Optional[str], Field()] = None,
-    role: Annotated[Optional[str], Field()] = None,
-    use_case: Annotated[Optional[str], Field()] = None,
-    team_size: Annotated[Optional[str], Field()] = None,
-    timeline: Annotated[Optional[str], Field()] = None,
+    name: Annotated[str, Field(description="The name the user provides")],
 ) -> str:
+    """Lookup a customer in SQLite DB."""
+    print(f"🔎 LOOKING UP: {name}")
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    profile = ctx.userdata.lead_profile
+        cur.execute(
+            "SELECT * FROM fraud_cases WHERE LOWER(userName) = LOWER(?) LIMIT 1",
+            (name,),
+        )
+        row = cur.fetchone()
+        conn.close()
 
-    if name: profile.name = name
-    if company: profile.company = company
-    if email: profile.email = email
-    if role: profile.role = role
-    if use_case: profile.use_case = use_case
-    if team_size: profile.team_size = team_size
-    if timeline: profile.timeline = timeline
+        if not row:
+            return "User not found in the fraud database. Please repeat the name."
 
-    return "Details updated."
+        record = dict(row)
+        ctx.userdata.active_case = FraudCase(
+            userName=record["userName"],
+            securityIdentifier=record["securityIdentifier"],
+            cardEnding=record["cardEnding"],
+            transactionName=record["transactionName"],
+            transactionAmount=record["transactionAmount"],
+            transactionTime=record["transactionTime"],
+            transactionSource=record["transactionSource"],
+            case_status=record["case_status"],
+            notes=record["notes"],
+        )
+
+        return (
+            f"Record Found.\n"
+            f"User: {record['userName']}\n"
+            f"Security ID (Expected): {record['securityIdentifier']}\n"
+            f"Transaction: {record['transactionAmount']} at {record['transactionName']} ({record['transactionSource']})\n"
+            f"Ask user for their Security Identifier now."
+        )
+
+    except Exception as e:
+        return f"Database error: {str(e)}"
+
 
 @function_tool
-async def submit_lead_and_end(
+async def resolve_fraud_case(
     ctx: RunContext[Userdata],
+    status: Annotated[str, Field(description="confirmed_safe or confirmed_fraud")],
+    notes: Annotated[str, Field(description="Notes on the user's confirmation")],
 ) -> str:
-    profile = ctx.userdata.lead_profile
-    db_path = os.path.join(os.path.dirname(__file__), LEADS_FILE)
 
-    entry = asdict(profile)
-    entry["timestamp"] = datetime.now().isoformat()
+    if not ctx.userdata.active_case:
+        return "Error: No active case selected."
 
-    existing_data = []
-    if os.path.exists(db_path):
-        try:
-            with open(db_path, "r") as f:
-                existing_data = json.load(f)
-        except:
-            pass
+    case = ctx.userdata.active_case
+    case.case_status = status
+    case.notes = notes
 
-    existing_data.append(entry)
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    with open(db_path, "w") as f:
-        json.dump(existing_data, f, indent=4)
+        cur.execute(
+            """
+            UPDATE fraud_cases
+            SET case_status = ?, notes = ?, updated_at = datetime('now')
+            WHERE userName = ?
+            """,
+            (case.case_status, case.notes, case.userName),
+        )
+        conn.commit()
 
-    return f"Lead saved. Thank you {profile.name}! We'll reach out at {profile.email}."
+        # Confirm updated row
+        cur.execute("SELECT * FROM fraud_cases WHERE userName = ?", (case.userName,))
+        updated_row = dict(cur.fetchone())
+        conn.close()
 
-class SDRAgent(Agent):
+        print(f"✅ CASE UPDATED: {case.userName} -> {status}")
+
+        if status == "confirmed_fraud":
+            return (
+                f"Fraud confirmed. Card ending {case.cardEnding} is now BLOCKED. "
+                f"A replacement card will be issued.\n"
+                f"DB Updated At: {updated_row['updated_at']}"
+            )
+        else:
+            return (
+                f"Transaction marked SAFE. Restrictions lifted.\n"
+                f"DB Updated At: {updated_row['updated_at']}"
+            )
+
+    except Exception as e:
+        return f"Error saving to DB: {e}"
+
+# ======================================================
+# 🤖 4. AGENT DEFINITION
+# ======================================================
+
+class FraudAgent(Agent):
     def __init__(self):
         super().__init__(
-            instructions=f"""
-            You are Sarah, a professional Sales Development Rep for 'Dr. Abhishek Store'.
+            instructions="""
+            You are 'Alex', a Fraud Detection Specialist at Dr Abhishek Bank.
+            Follow strict security protocol:
 
-            Use the FAQ below to answer questions:
-            {STORE_FAQ_TEXT}
-
-            After answering a question, ask for lead details like:
-            - Name
-            - Email
-            - Use case (what they want to build)
-
-            Call `update_lead_profile` whenever the user shares details.
-            Call `submit_lead_and_end` when they say goodbye or done.
+            1. Greeting + ask for first name.
+            2. Immediately call lookup_customer(name).
+            3. Ask for Security Identifier.
+            4. If correct → continue. If incorrect → end call politely.
+            5. Explain suspicious transaction.
+            6. Ask: Did you make this transaction?
+               - YES → resolve_fraud_case('confirmed_safe')
+               - NO → resolve_fraud_case('confirmed_fraud')
+            7. Close professionally.
             """,
-            tools=[update_lead_profile, submit_lead_and_end],
+            tools=[lookup_customer, resolve_fraud_case],
         )
+
+# ======================================================
+# 🎬 ENTRYPOINT
+# ======================================================
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
+
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
-    userdata = Userdata(lead_profile=LeadProfile())
+
+    print("\n" + "💼" * 25)
+    print("🚀 STARTING FRAUD ALERT SESSION (SQLite)")
+
+    userdata = Userdata()
 
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
-        tts=murf.TTS(voice="en-US-natalie", style="Promo", text_pacing=True),
+        tts=murf.TTS(
+            voice="en-US-marcus",
+            style="Conversational",
+            text_pacing=True,
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         userdata=userdata,
     )
 
     await session.start(
-        agent=SDRAgent(),
+        agent=FraudAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
     )
 
     await ctx.connect()
+
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
