@@ -1,27 +1,13 @@
-# food_agent_sqlite.py
-"""
-Day 7 – Food & Grocery Ordering Voice Agent (SQLite) - Indian Context
-- Uses SQLite DB 'order_db.sqlite'
-- Seeds Indian catalog (Amul, Tata, Britannia, etc.)
-- Tools:
-    - find_item (search catalog)
-    - add_to_cart / remove_from_cart / update_cart / show_cart
-    - add_recipe (ingredients for Chai, Maggi, etc.)
-    - place_order (Trigger auto-status update simulation)
-    - cancel_order (New Feature)
-    - get_order_status / order_history
-- Auto-simulation: Status updates every 5 seconds in background.
-"""
+
 
 import json
 import logging
 import os
-import sqlite3
-import uuid
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Annotated
+from typing import List, Dict, Optional, Annotated
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -43,7 +29,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 # -------------------------
 # Logging
 # -------------------------
-logger = logging.getLogger("food_agent_sqlite")
+logger = logging.getLogger("voice_game_master")
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -52,596 +38,689 @@ logger.addHandler(handler)
 load_dotenv(".env.local")
 
 # -------------------------
-# DB config & seeding
+# Simple Product Catalog (Dr Abhishek Shop)
 # -------------------------
-DB_FILE = "order_db.sqlite"
+# A compact Indian-flavored catalog with attributes: id, name, price (INR), category, color, sizes
+CATALOG = [
+    {
+        "id": "mug-001",
+        "name": "Stoneware Chai Mug",
+        "description": "Hand-glazed ceramic mug perfect for masala chai.",
+        "price": 299,
+        "currency": "INR",
+        "category": "mug",
+        "color": "blue",
+        "sizes": [],
+    },
+    {
+        "id": "tee-001",
+        "name": "Dr Abhishek Tee (Cotton)",
+        "description": "Comfort-fit cotton t-shirt with subtle logo.",
+        "price": 799,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "black",
+        "sizes": ["S", "M", "L", "XL"],
+    },
+    {
+        "id": "hoodie-001",
+        "name": "Cozy Hoodie",
+        "description": "Warm pullover hoodie, fleece-lined.",
+        "price": 1499,
+        "currency": "INR",
+        "category": "hoodie",
+        "color": "grey",
+        "sizes": ["M", "L", "XL"],
+    },
+    {
+        "id": "mug-002",
+        "name": "Insulated Travel Mug",
+        "description": "Keeps chai warm on your way to work.",
+        "price": 599,
+        "currency": "INR",
+        "category": "mug",
+        "color": "white",
+        "sizes": [],
+    },
+    {
+        "id": "hoodie-002",
+        "name": "Black Zip Hoodie",
+        "description": "Lightweight zip-up hoodie, black.",
+        "price": 1299,
+        "currency": "INR",
+        "category": "hoodie",
+        "color": "black",
+        "sizes": ["S", "M", "L"],
+    },
+    # T-shirts (expanded)
+    {
+        "id": "tee-002",
+        "name": "Casual Cotton Tee",
+        "description": "Everyday cotton t-shirt, breathable and soft.",
+        "price": 299,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "white",
+        "sizes": ["S", "M", "L", "XL"],
+    },
+    {
+        "id": "tee-003",
+        "name": "Graphic Tee",
+        "description": "Printed graphic t-shirt with vibrant design.",
+        "price": 499,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "navy",
+        "sizes": ["S", "M", "L", "XL"],
+    },
+    {
+        "id": "tee-004",
+        "name": "Premium Polo Tee",
+        "description": "Polo-style t-shirt with premium stitching.",
+        "price": 999,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "maroon",
+        "sizes": ["M", "L", "XL"],
+    },
+    {
+        "id": "tee-005",
+        "name": "Summer V-neck Tee",
+        "description": "Lightweight V-neck tee for hot days.",
+        "price": 350,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "sky",
+        "sizes": ["S", "M", "L"],
+    },
+    {
+        "id": "tee-006",
+        "name": "Henley Tee",
+        "description": "Smart casual henley style t-shirt.",
+        "price": 699,
+        "currency": "INR",
+        "category": "tshirt",
+        "color": "olive",
+        "sizes": ["M", "L", "XL"],
+    },
+    # Raincoats / Outerwear
+    {
+        "id": "rain-001",
+        "name": "Light Raincoat",
+        "description": "Waterproof light raincoat, packable.",
+        "price": 1299,
+        "currency": "INR",
+        "category": "raincoat",
+        "color": "yellow",
+        "sizes": ["M", "L", "XL"],
+    },
+    {
+        "id": "rain-002",
+        "name": "Heavy Duty Raincoat",
+        "description": "Heavy-duty rainproof coat for monsoon.",
+        "price": 2499,
+        "currency": "INR",
+        "category": "raincoat",
+        "color": "navy",
+        "sizes": ["L", "XL"],
+    },
+    # Laptops
+    {
+        "id": "laptop-001",
+        "name": "Generic Laptop (50k)",
+        "description": "A reliable laptop suitable for everyday use.",
+        "price": 50000,
+        "currency": "INR",
+        "category": "laptop",
+        "color": "silver",
+        "sizes": [],
+    },
+    {
+        "id": "laptop-002",
+        "name": "Dell Inspiron (Budget)",
+        "description": "Compact Dell laptop for students and professionals.",
+        "price": 27800,
+        "currency": "INR",
+        "category": "laptop",
+        "color": "black",
+        "sizes": [],
+    },
+    {
+        "id": "laptop-003",
+        "name": "Lenovo ThinkPad",
+        "description": "Durable Lenovo laptop with strong performance.",
+        "price": 60000,
+        "currency": "INR",
+        "category": "laptop",
+        "color": "black",
+        "sizes": [],
+    },
+    {
+        "id": "laptop-004",
+        "name": "HP Pavilion",
+        "description": "High-performance HP laptop for creators.",
+        "price": 100000,
+        "currency": "INR",
+        "category": "laptop",
+        "color": "silver",
+        "sizes": [],
+    },
+    # Storage
+    {
+        "id": "storage-001",
+        "name": "External Hard Disk 1TB",
+        "description": "Portable external hard disk for backups.",
+        "price": 50000,
+        "currency": "INR",
+        "category": "storage",
+        "color": "black",
+        "sizes": [],
+    },
+    # Mobile phones (10k - 50k examples)
+    {
+        "id": "phone-001",
+        "name": "Redmi Note (Entry)",
+        "description": "Affordable Redmi smartphone with solid features.",
+        "price": 12000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "blue",
+        "sizes": [],
+    },
+    {
+        "id": "phone-002",
+        "name": "Oppo A-Series",
+        "description": "Stylish Oppo phone with good camera.",
+        "price": 18000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "green",
+        "sizes": [],
+    },
+    {
+        "id": "phone-003",
+        "name": "Samsung M-Series",
+        "description": "Mid-range Samsung phone for everyday use.",
+        "price": 25000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "black",
+        "sizes": [],
+    },
+    {
+        "id": "phone-004",
+        "name": "iPhone (Standard)",
+        "description": "Apple iPhone model example (price varies by config).",
+        "price": 50000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "white",
+        "sizes": [],
+    },
+    {
+        "id": "phone-005",
+        "name": "Oppo Reno",
+        "description": "Higher-end Oppo phone with premium features.",
+        "price": 35000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "black",
+        "sizes": [],
+    },
+    {
+        "id": "phone-006",
+        "name": "Redmi Pro",
+        "description": "Redmi higher-tier phone with improved camera and battery.",
+        "price": 22000,
+        "currency": "INR",
+        "category": "mobile",
+        "color": "grey",
+        "sizes": [],
+    },
+]
 
 
-def get_db_path() -> str:
-    """Return absolute path for the DB file. If __file__ is not defined (interactive), fall back to cwd."""
-    try:
-        base = os.path.abspath(os.path.dirname(__file__))
-    except NameError:
-        base = os.getcwd()
-    # ensure directory exists
-    if not os.path.isdir(base):
-        os.makedirs(base, exist_ok=True)
-    return os.path.join(base, DB_FILE)
 
+ORDERS_FILE = "orders.json"
 
-def get_conn():
-    path = get_db_path()
-    # check_same_thread=False required for async background tasks accessing DB
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
-
-
-def seed_database():
-    """Create tables and seed the Indian catalog if empty."""
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-
-        # Create catalog table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS catalog (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                category TEXT,
-                price REAL NOT NULL,
-                brand TEXT,
-                size TEXT,
-                units TEXT,
-                tags TEXT -- JSON encoded list
-            )
-        """)
-
-        # Orders table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id TEXT PRIMARY KEY,
-                timestamp TEXT,
-                total REAL,
-                customer_name TEXT,
-                address TEXT,
-                status TEXT DEFAULT 'received',
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-
-        # Order items
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS order_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id TEXT,
-                item_id TEXT,
-                name TEXT,
-                unit_price REAL,
-                quantity INTEGER,
-                notes TEXT,
-                FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
-            )
-        """)
-
-        # Check if catalog empty
-        cur.execute("SELECT COUNT(1) FROM catalog")
-        if cur.fetchone()[0] == 0:
-            catalog = [
-                # Dairy
-                ("milk-amul-1l", "Amul Taaza Milk", "Dairy", 72.00, "Amul", "1L", "pack", json.dumps(["dairy", "essential"])),
-                ("paneer-200g", "Amul Malai Paneer", "Dairy", 95.00, "Amul", "200g", "pack", json.dumps(["dairy", "protein", "veg"])),
-                ("butter-100g", "Amul Butter", "Dairy", 58.00, "Amul", "100g", "pack", json.dumps(["dairy"])),
-                ("curd-400g", "Mother Dairy Dahi", "Dairy", 40.00, "Mother Dairy", "400g", "cup", json.dumps(["dairy"])),
-                
-                # Staples/Pantry
-                ("atta-5kg", "Aashirvaad Whole Wheat Atta", "Staples", 245.00, "Aashirvaad", "5kg", "bag", json.dumps(["flour", "roti"])),
-                ("rice-basmati-1kg", "India Gate Basmati Rice", "Staples", 160.00, "India Gate", "1kg", "bag", json.dumps(["rice", "premium"])),
-                ("dal-toor-1kg", "Tata Sampann Toor Dal", "Staples", 185.00, "Tata", "1kg", "pack", json.dumps(["protein", "dal"])),
-                ("salt-1kg", "Tata Salt", "Staples", 28.00, "Tata", "1kg", "pack", json.dumps(["essential"])),
-                ("sugar-1kg", "Madhur Sugar", "Staples", 60.00, "Madhur", "1kg", "pack", json.dumps(["sweet"])),
-                
-                # Snacks & Instant
-                ("maggi-masala", "Maggi 2-Minute Noodles", "Instant Food", 14.00, "Nestle", "70g", "pack", json.dumps(["snack", "noodles"])),
-                ("biscuits-marie", "Britannia Marie Gold", "Snacks", 35.00, "Britannia", "250g", "pack", json.dumps(["tea-time"])),
-                ("chips-lays", "Lays Magic Masala", "Snacks", 20.00, "Lays", "50g", "pack", json.dumps(["snack", "spicy"])),
-                ("tea-250g", "Red Label Tea", "Beverages", 140.00, "Brooke Bond", "250g", "pack", json.dumps(["chai", "tea"])),
-                
-                # Veggies (Market Price estimates)
-                ("potato-1kg", "Fresh Potatoes", "Vegetables", 40.00, "", "1kg", "kg", json.dumps(["veg"])),
-                ("onion-1kg", "Fresh Onions", "Vegetables", 55.00, "", "1kg", "kg", json.dumps(["veg"])),
-                ("tomato-1kg", "Fresh Tomatoes", "Vegetables", 60.00, "", "1kg", "kg", json.dumps(["veg"])),
-                ("ginger-100g", "Fresh Ginger", "Vegetables", 20.00, "", "100g", "g", json.dumps(["veg", "chai"])),
-            ]
-            cur.executemany("""
-                INSERT INTO catalog (id, name, category, price, brand, size, units, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, catalog)
-            conn.commit()
-            logger.info(f"✅ Seeded Indian catalog into {get_db_path()}")
-
-        conn.close()
-    except Exception as e:
-        logger.exception("Failed to seed database: %s", e)
-
-
-# Seed DB on import/run (safe to call multiple times)
-seed_database()
+# ensure orders file exists
+if not os.path.exists(ORDERS_FILE):
+    with open(ORDERS_FILE, "w") as f:
+        json.dump([], f)
 
 # -------------------------
-# In-memory per-session cart
+# Per-session Userdata (shopping-centric)
 # -------------------------
-@dataclass
-class CartItem:
-    item_id: str
-    name: str
-    unit_price: float
-    quantity: int = 1
-    notes: str = ""
-
 @dataclass
 class Userdata:
-    cart: List[CartItem] = field(default_factory=list)
-    customer_name: Optional[str] = None
+    player_name: Optional[str] = None  # retained name field (player -> customer)
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    cart: List[Dict] = field(default_factory=list)  # list of {product_id, quantity, attrs}
+    orders: List[Dict] = field(default_factory=list)  # orders placed in this session
+    history: List[Dict] = field(default_factory=list)  # conversational actions for trace
 
 # -------------------------
-# DB Helpers
+# Merchant-layer helpers (ACP-inspired mini layer)
 # -------------------------
 
-def find_catalog_item_by_id_db(item_id: str) -> Optional[dict]:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM catalog WHERE LOWER(id) = LOWER(?) LIMIT 1", (item_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return None
-    record = dict(row)
+def _load_all_orders() -> List[Dict]:
     try:
-        record["tags"] = json.loads(record.get("tags") or "[]")
+        with open(ORDERS_FILE, "r") as f:
+            return json.load(f)
     except Exception:
-        record["tags"] = []
-    return record
+        return []
 
 
-def search_catalog_by_name_db(query: str) -> List[dict]:
-    q = f"%{query.lower()}%"
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT * FROM catalog
-        WHERE LOWER(name) LIKE ? OR LOWER(tags) LIKE ?
-        LIMIT 50
-    """, (q, q))
-    rows = cur.fetchall()
-    conn.close()
+def _save_order(order: Dict):
+    orders = _load_all_orders()
+    orders.append(order)
+    with open(ORDERS_FILE, "w") as f:
+        json.dump(orders, f, indent=2)
+
+
+def list_products(filters: Optional[Dict] = None) -> List[Dict]:
+    """Naive filtering by category, max_price, color, size substring, or query words.
+
+    Improvements:
+    - Accepts category synonyms (e.g., 'phone', 'mobile', 'phones' -> 'mobile').
+    - Supports a flexible max_price and min_price (if provided in filters).
+    - Matches category by substring if exact match fails.
+    """
+    filters = filters or {}
     results = []
-    for r in rows:
-        rec = dict(r)
-        try:
-            rec["tags"] = json.loads(rec.get("tags") or "[]")
-        except Exception:
-            rec["tags"] = []
-        results.append(rec)
+    query = filters.get("q")
+    category = filters.get("category")
+    max_price = filters.get("max_price") or filters.get("to") or filters.get("max")
+    min_price = filters.get("min_price") or filters.get("from") or filters.get("min")
+    color = filters.get("color")
+    size = filters.get("size")
+
+    # normalize category synonyms
+    if category:
+        cat = category.lower()
+        if cat in ("phone", "phones", "mobile", "mobile phone", "mobiles"):
+            category = "mobile"
+        elif cat in ("tshirt", "t-shirts", "tees", "tee"):
+            category = "tshirt"
+        else:
+            category = cat
+
+    for p in CATALOG:
+        ok = True
+        # category matching: allow substring matches if direct equality fails
+        if category:
+            pcat = p.get("category", "").lower()
+            if pcat != category and category not in pcat and pcat not in category:
+                ok = False
+        if max_price:
+            try:
+                if p.get("price", 0) > int(max_price):
+                    ok = False
+            except Exception:
+                pass
+        if min_price:
+            try:
+                if p.get("price", 0) < int(min_price):
+                    ok = False
+            except Exception:
+                pass
+        if color and p.get("color") and p.get("color") != color:
+            ok = False
+        if size and (not p.get("sizes") or size not in p.get("sizes")):
+            ok = False
+        if query:
+            q = query.lower()
+            # if query mentions 'phone' or 'mobile', accept mobile category too
+            if "phone" in q or "mobile" in q:
+                if p.get("category") != "mobile":
+                    ok = False
+            else:
+                if q not in p.get("name", "").lower() and q not in p.get("description", "").lower():
+                    ok = False
+        if ok:
+            results.append(p)
     return results
 
 
-def insert_order_db(order_id: str, timestamp: str, total: float, customer_name: str, address: str, status: str, items: List[CartItem]):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO orders (order_id, timestamp, total, customer_name, address, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    """, (order_id, timestamp, total, customer_name, address, status))
-    for ci in items:
-        cur.execute("""
-            INSERT INTO order_items (order_id, item_id, name, unit_price, quantity, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (order_id, ci.item_id, ci.name, ci.unit_price, ci.quantity, ci.notes))
-    conn.commit()
-    conn.close()
+def find_product_by_ref(ref_text: str, candidates: Optional[List[Dict]] = None) -> Optional[Dict]:
+    """Resolve references like 'second hoodie' or 'black hoodie' to a product dict.
+    Heuristics improved:
+    - Handle ordinals like 'first/second/third' within a filtered candidate list.
+    - If ref mentions 'phone' or 'mobile' prefer mobile category products.
+    - Match by id, color+category, name substring, or numeric index.
+    """
+    ref = (ref_text or "").lower().strip()
+    cand = candidates if candidates is not None else CATALOG
+
+    # prefer mobiles if user explicitly mentions phone/mobile
+    wants_mobile = any(w in ref for w in ("phone", "phones", "mobile", "mobiles"))
+    filtered = cand
+    if wants_mobile:
+        filtered = [p for p in cand if p.get("category") == "mobile"]
+        if not filtered:
+            filtered = cand
+
+    # ordinal handling
+    ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3}
+    for word, idx in ordinals.items():
+        if word in ref:
+            if idx < len(filtered):
+                return filtered[idx]
+
+    # direct id match
+    for p in cand:
+        if p["id"].lower() == ref:
+            return p
+
+    # color + category matching
+    for p in cand:
+        if p.get("color") and p["color"] in ref and p.get("category") and p["category"] in ref:
+            return p
+
+    # name substring or keywords
+    for p in filtered:
+        name = p["name"].lower()
+        if all(tok in name for tok in ref.split() if len(tok) > 2):
+            return p
+    for p in cand:
+        for tok in ref.split():
+            if len(tok) > 2 and tok in p["name"].lower():
+                return p
+
+    # numeric index like '2' -> second
+    for token in ref.split():
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(filtered):
+                return filtered[idx]
+
+    # fallback: if user said 'second phone' but we couldn't match earlier, try overall cand ordinals
+    for word, idx in ordinals.items():
+        if word in ref and idx < len(cand):
+            return cand[idx]
+
+    return None
 
 
-def get_order_db(order_id: str) -> Optional[dict]:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE order_id = ? LIMIT 1", (order_id,))
-    o = cur.fetchone()
-    if not o:
-        conn.close()
-        return None
-    order = dict(o)
-    cur.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
-    items = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    order["items"] = items
+@function_tool
+async def show_catalog(
+    ctx: RunContext[Userdata],
+    q: Annotated[Optional[str], Field(description="Search query (optional)", default=None)] = None,
+    category: Annotated[Optional[str], Field(description="Category (optional)", default=None)] = None,
+    max_price: Annotated[Optional[int], Field(description="Maximum price (optional)", default=None)] = None,
+    color: Annotated[Optional[str], Field(description="Color (optional)", default=None)] = None,
+) -> str:
+    """Return a short spoken summary of matching products (name, price, id).
+    Improvements:
+    - Recognize category synonyms like 'phones' and 'tees'.
+    - Return up to 8 items and explicitly call out mobiles if present.
+    """
+    userdata = ctx.userdata
+    # try to normalize category input
+    if category:
+        cat = category.lower()
+        if cat in ("phone", "phones", "mobile", "mobile phone", "mobiles"):
+            category = "mobile"
+        elif cat in ("tshirt", "t-shirts", "tees", "tee"):
+            category = "tshirt"
+        else:
+            category = cat
+    # If query mentions phones, prefer category mobile
+    if not category and q:
+        if any(w in q.lower() for w in ("phone", "phones", "mobile", "mobiles")):
+            category = "mobile"
+        if any(w in q.lower() for w in ("tee", "tshirt", "t-shirts", "tees")):
+            category = "tshirt"
+
+    filters = {"q": q, "category": category, "max_price": max_price, "color": color}
+    prods = list_products({k: v for k, v in filters.items() if v is not None})
+    if not prods:
+        return "Sorry — I couldn't find any items that match. Would you like to try another search?"
+    # Summarize top 8
+    lines = [f"Here are the top {min(8, len(prods))} items I found at Dr Abhishek Shop:"]
+    for idx, p in enumerate(prods[:8], start=1):
+        size_info = f" (sizes: {', '.join(p['sizes'])})" if p.get('sizes') else ""
+        lines.append(f"{idx}. {p['name']} — {p['price']} {p['currency']} (id: {p['id']}){size_info}")
+    lines.append("You can say: 'I want the second item in size M' or 'add mug-001 to my cart, quantity 2'.")
+    # If mobiles were in results, add a short phrasing hint
+    if any(p.get('category') == 'mobile' for p in prods):
+        lines.append("To buy a phone say: 'Add phone-002 to my cart' or 'I want the second phone, quantity 1'.")
+    return "\n".join(lines)
+
+
+def find_product_by_ref(ref_text: str, candidates: Optional[List[Dict]] = None) -> Optional[Dict]:
+    """Resolve references like 'second hoodie' or 'black hoodie' to a product dict.
+    Very simple heuristic: look for ordinal words, color or exact id/name matching.
+    """
+    ref = (ref_text or "").lower().strip()
+    cand = candidates if candidates is not None else CATALOG
+
+    # ordinal handling
+    ordinals = {"first": 0, "second": 1, "third": 2}
+    for word, idx in ordinals.items():
+        if word in ref:
+            if idx < len(cand):
+                return cand[idx]
+
+    # direct id match
+    for p in cand:
+        if p["id"].lower() == ref:
+            return p
+
+    # color + category matching
+    for p in cand:
+        if p.get("color") and p["color"] in ref and p.get("category") and p["category"] in ref:
+            return p
+
+    # name substring
+    for p in cand:
+        if p["name"].lower() in ref or any(w in p["name"].lower() for w in ref.split()):
+            return p
+
+    # fallback: if a number present, try to parse as '2nd of last list'
+    for token in ref.split():
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(cand):
+                return cand[idx]
+
+    return None
+
+
+def create_order_object(line_items: List[Dict], currency: str = "INR") -> Dict:
+    """line_items: [{product_id, quantity, attrs}]
+    Returns an order dict (id, items, total, currency, created_at)
+    """
+    items = []
+    total = 0
+    for li in line_items:
+        pid = li.get("product_id")
+        qty = int(li.get("quantity", 1))
+        prod = next((p for p in CATALOG if p["id"] == pid), None)
+        if not prod:
+            raise ValueError(f"Product {pid} not found")
+        line_total = prod["price"] * qty
+        total += line_total
+        items.append({
+            "product_id": pid,
+            "name": prod["name"],
+            "unit_price": prod["price"],
+            "quantity": qty,
+            "line_total": line_total,
+            "attrs": li.get("attrs", {}),
+        })
+    order = {
+        "id": f"order-{str(uuid.uuid4())[:8]}",
+        "items": items,
+        "total": total,
+        "currency": currency,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    # persist
+    _save_order(order)
     return order
 
 
-def list_orders_db(limit: int = 10, customer_name: Optional[str] = None) -> List[dict]:
-    conn = get_conn()
-    cur = conn.cursor()
-    if customer_name:
-        cur.execute("SELECT * FROM orders WHERE LOWER(customer_name) = LOWER(?) ORDER BY created_at DESC LIMIT ?", (customer_name, limit))
-    else:
-        cur.execute("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-def update_order_status_db(order_id: str, new_status: str) -> bool:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE orders SET status = ?, updated_at = datetime('now') WHERE order_id = ?", (new_status, order_id))
-    changed = cur.rowcount
-    conn.commit()
-    conn.close()
-    return changed > 0
+def get_most_recent_order() -> Optional[Dict]:
+    all_orders = _load_all_orders()
+    if not all_orders:
+        return None
+    return all_orders[-1]
 
 # -------------------------
-# LOGIC & ASYNC SIMULATION
+# Agent Tools (function_tool) exposed to the LLM layer
 # -------------------------
 
-# Recipe map for "Add Recipe" tool
-RECIPE_MAP = {
-    "chai": ["milk-amul-1l", "tea-250g", "sugar-1kg", "ginger-100g"],
-    "paneer butter masala": ["paneer-200g", "butter-100g", "tomato-1kg"],
-    "maggi": ["maggi-masala"],
-    "dal chawal": ["dal-toor-1kg", "rice-basmati-1kg"],
-}
-
-# Intelligent ingredient inference helpers
-import re
-
-_NUMBER_WORDS = {
-    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
-    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
-}
-
-def _parse_servings_from_text(text: str) -> int:
-    """Try to extract servings/quantity from informal text like 'for two people' or 'for 3'. Default 1."""
-    text = (text or "").lower()
-    m = re.search(r"for\s+(\d+)\s*(?:people|person|servings)?", text)
-    if m:
-        try:
-            return max(1, int(m.group(1)))
-        except Exception:
-            pass
-    for word, num in _NUMBER_WORDS.items():
-        if f"for {word}" in text:
-            return num
-    return 1
-
-
-def _infer_items_from_tags(query: str, max_results: int = 6) -> List[str]:
-    """Try to infer catalog items by matching query words to tags in the catalog. Returns list of item_ids."""
-    words = re.findall(r"\w+", (query or "").lower())
-    found = []
-    conn = get_conn()
-    cur = conn.cursor()
-    for w in words:
-        if len(found) >= max_results:
-            break
-        q = f"%\"{w}\"%"
-        cur.execute("SELECT * FROM catalog WHERE LOWER(tags) LIKE ? OR LOWER(name) LIKE ? LIMIT 10", (q, f"%{w}%"))
-        rows = cur.fetchall()
-        for r in rows:
-            rid = r["id"]
-            if rid not in found:
-                found.append(rid)
-                if len(found) >= max_results:
-                    break
-    conn.close()
-    return found
-
-STATUS_FLOW = ["received", "confirmed", "shipped", "out_for_delivery", "delivered"]
-
-
-async def simulate_delivery_flow(order_id: str):
-    """
-    Background task: automatically advances order status every 5 seconds.
-    Flow: received -> confirmed -> shipped -> out_for_delivery -> delivered
-    """
-    logger.info(f"🔄 [Simulation] Started tracking simulation for {order_id}")
-
-    # initial wait
-    await asyncio.sleep(5)
-
-    # Loop through statuses starting from index 1 (confirmed)
-    for next_status in STATUS_FLOW[1:]:
-        # Check if order was cancelled in the meantime
-        curr_order = get_order_db(order_id)
-        if curr_order and curr_order.get("status") == "cancelled":
-            logger.info(f"🛑 [Simulation] Order {order_id} was cancelled. Stopping simulation.")
-            return
-
-        update_order_status_db(order_id, next_status)
-        logger.info(f"🚚 [Simulation] Order {order_id} updated to '{next_status}'")
-        await asyncio.sleep(5)
-
-    logger.info(f"✅ [Simulation] Order {order_id} simulation complete (Delivered).")
-
-
-def cart_total(cart: List[CartItem]) -> float:
-    return round(sum(ci.unit_price * ci.quantity for ci in cart), 2)
-
-# -------------------------
-# AGENT TOOLS
-# -------------------------
 @function_tool
-async def find_item(
+async def show_catalog(
     ctx: RunContext[Userdata],
-    query: Annotated[str, Field(description="Name or partial name of item (e.g., 'milk', 'paneer')")],
+    q: Annotated[Optional[str], Field(description="Search query (optional)", default=None)] = None,
+    category: Annotated[Optional[str], Field(description="Category (optional)", default=None)] = None,
+    max_price: Annotated[Optional[int], Field(description="Maximum price (optional)", default=None)] = None,
+    color: Annotated[Optional[str], Field(description="Color (optional)", default=None)] = None,
 ) -> str:
-    matches = search_catalog_by_name_db(query)
-    if not matches:
-        return f"No items found matching '{query}'. Try generic names like 'milk' or 'rice'."
-    lines = []
-    for it in matches[:10]:
-        lines.append(f"- {it['name']} (id: {it['id']}) — ₹{it['price']:.2f} — {it.get('size','')}")
-    return "Found:\n" + "\n".join(lines)
+    """Return a short spoken summary of matching products (name, price, id)."""
+    userdata = ctx.userdata
+    filters = {"q": q, "category": category, "max_price": max_price, "color": color}
+    prods = list_products({k: v for k, v in filters.items() if v is not None})
+    if not prods:
+        return "Sorry — I couldn't find any items that match. Would you like to try another search?"
+    # Summarize top 4
+    lines = [f"Here are the top {min(4, len(prods))} items I found at Dr Abhishek Shop:"]
+    for idx, p in enumerate(prods[:4], start=1):
+        lines.append(f"{idx}. {p['name']} — {p['price']} {p['currency']} (id: {p['id']})")
+    lines.append("You can say: 'I want the second item in size M' or 'add mug-001 to my cart, quantity 2'.")
+    return "\n".join(lines)
 
 
 @function_tool
 async def add_to_cart(
     ctx: RunContext[Userdata],
-    item_id: Annotated[str, Field(description="Catalog item id")],
+    product_ref: Annotated[str, Field(description="Reference to product: id, name, or spoken ref")] ,
     quantity: Annotated[int, Field(description="Quantity", default=1)] = 1,
-    notes: Annotated[str, Field(description="Optional notes")] = "",
+    size: Annotated[Optional[str], Field(description="Size (optional)", default=None)] = None,
 ) -> str:
-    item = find_catalog_item_by_id_db(item_id)
-    if not item:
-        return f"Item id '{item_id}' not found."
-
-    for ci in ctx.userdata.cart:
-        if ci.item_id.lower() == item_id.lower():
-            ci.quantity += quantity
-            if notes:
-                ci.notes = notes
-            total = cart_total(ctx.userdata.cart)
-            return f"Updated '{ci.name}' quantity to {ci.quantity}. Cart total: \u20B9{total:.2f}"
-
-    ci = CartItem(item_id=item["id"], name=item["name"], unit_price=float(item["price"]), quantity=quantity, notes=notes)
-    ctx.userdata.cart.append(ci)
-    total = cart_total(ctx.userdata.cart)
-    return f"Added {quantity} x '{item['name']}' to cart. Cart total: \u20B9{total:.2f}"
+    """Resolve a product and add to the session cart."""
+    userdata = ctx.userdata
+    # take recent catalog as candidates
+    candidates = CATALOG
+    prod = find_product_by_ref(product_ref, candidates)
+    if not prod:
+        return "I couldn't resolve which product you meant. Try using the item id or say 'show catalog' to hear options.'"
+    userdata.cart.append({
+        "product_id": prod["id"],
+        "quantity": int(quantity),
+        "attrs": {"size": size} if size else {},
+    })
+    userdata.history.append({
+        "time": datetime.utcnow().isoformat() + "Z",
+        "action": "add_to_cart",
+        "product_id": prod["id"],
+        "quantity": int(quantity),
+    })
+    return f"Added {quantity} x {prod['name']} to your cart. What would you like to do next?"
 
 
 @function_tool
-async def remove_from_cart(
+async def show_cart(
     ctx: RunContext[Userdata],
-    item_id: Annotated[str, Field(description="Catalog item id to remove")],
 ) -> str:
-    before = len(ctx.userdata.cart)
-    ctx.userdata.cart = [ci for ci in ctx.userdata.cart if ci.item_id.lower() != item_id.lower()]
-    after = len(ctx.userdata.cart)
-    if before == after:
-        return f"Item '{item_id}' was not in your cart."
-    total = cart_total(ctx.userdata.cart)
-    return f"Removed item '{item_id}' from cart. Cart total: \u20B9{total:.2f}"
-
-
-@function_tool
-async def update_cart_quantity(
-    ctx: RunContext[Userdata],
-    item_id: Annotated[str, Field(description="Catalog item id to update")],
-    quantity: Annotated[int, Field(description="New quantity")],
-) -> str:
-    if quantity < 1:
-        return await remove_from_cart(ctx, item_id)
-    for ci in ctx.userdata.cart:
-        if ci.item_id.lower() == item_id.lower():
-            ci.quantity = quantity
-            total = cart_total(ctx.userdata.cart)
-            return f"Updated '{ci.name}' quantity to {ci.quantity}. Cart total: \u20B9{total:.2f}"
-    return f"Item '{item_id}' not found in cart."
-
-
-@function_tool
-async def show_cart(ctx: RunContext[Userdata]) -> str:
-    if not ctx.userdata.cart:
-        return "Your cart is empty."
-    lines = []
-    for ci in ctx.userdata.cart:
-        lines.append(f"- {ci.quantity} x {ci.name} @ \u20B9{ci.unit_price:.2f} each = \u20B9{ci.unit_price * ci.quantity:.2f}")
-    total = cart_total(ctx.userdata.cart)
-    return "Your cart:\n" + "\n".join(lines) + f"\nTotal: \u20B9{total:.2f}"
-
-
-@function_tool
-async def add_recipe(
-    ctx: RunContext[Userdata],
-    dish_name: Annotated[str, Field(description="Name of dish, e.g. 'chai', 'maggi', 'dal chawal'")],
-) -> str:
-    key = dish_name.strip().lower()
-    if key not in RECIPE_MAP:
-        return f"Sorry, I don't have a recipe for '{dish_name}'. Try 'chai', 'maggi' or 'paneer butter masala'."
-    added = []
-    for item_id in RECIPE_MAP[key]:
-        item = find_catalog_item_by_id_db(item_id)
-        if not item:
+    userdata = ctx.userdata
+    if not userdata.cart:
+        return "Your cart is empty. You can say 'show catalog' to browse items.'"
+    lines = ["Items in your cart:"]
+    total = 0
+    for li in userdata.cart:
+        p = next((x for x in CATALOG if x["id"] == li["product_id"]), None)
+        if not p:
             continue
-
-        found = False
-        for ci in ctx.userdata.cart:
-            if ci.item_id.lower() == item_id.lower():
-                ci.quantity += 1
-                found = True
-                break
-        if not found:
-            ctx.userdata.cart.append(CartItem(item_id=item["id"], name=item["name"], unit_price=float(item["price"]), quantity=1))
-        added.append(item["name"])
-
-    total = cart_total(ctx.userdata.cart)
-    return f"Added ingredients for '{dish_name}': {', '.join(added)}. Cart total: \u20B9{total:.2f}"
+        line_total = p["price"] * li.get("quantity", 1)
+        total += line_total
+        sz = li.get("attrs", {}).get("size")
+        sz_text = f", size {sz}" if sz else ""
+        lines.append(f"- {p['name']} x {li['quantity']}{sz_text}: {line_total} INR")
+    lines.append(f"Cart total: {total} INR")
+    lines.append("Say 'place my order' to checkout or 'clear cart' to empty the cart.")
+    return "\n".join(lines)
 
 
 @function_tool
-async def ingredients_for(
+async def clear_cart(
     ctx: RunContext[Userdata],
-    request: Annotated[str, Field(description="Natural language request, e.g. 'ingredients for peanut butter sandwich for two'")],
 ) -> str:
-    """Handle high-level ingredient requests like 'ingredients for peanut butter sandwich' or 'get me pasta for two people'.
-    Attempts a map lookup first, then falls back to tag inference.
-    """
-    text = (request or "").strip()
-    servings = _parse_servings_from_text(text)
-
-    # try to extract a dish phrase after common verbs
-    m = re.search(r"ingredients? for (.+)", text, re.I)
-    if m:
-        dish = m.group(1)
-    else:
-        m2 = re.search(r"(?:make|for making|get me what i need for|i need) (.+)", text, re.I)
-        dish = m2.group(1) if m2 else text
-
-    # remove trailing 'for X people' fragments
-    dish = re.sub(r"for\s+\w+(?: people| person| persons)?", "", dish, flags=re.I).strip()
-    key = dish.lower()
-
-    item_ids = []
-    if key in RECIPE_MAP:
-        item_ids = RECIPE_MAP[key]
-    else:
-        item_ids = _infer_items_from_tags(dish)
-
-    if not item_ids:
-        return f"Sorry, I couldn't determine ingredients for '{request}'. Try a simpler phrase like 'chai' or 'maggi'."
-
-    added = []
-    for iid in item_ids:
-        item = find_catalog_item_by_id_db(iid)
-        if not item:
-            continue
-        # add with servings as quantity
-        found = False
-        for ci in ctx.userdata.cart:
-            if ci.item_id.lower() == iid.lower():
-                ci.quantity += servings
-                found = True
-                break
-        if not found:
-            ctx.userdata.cart.append(CartItem(item_id=item['id'], name=item['name'], unit_price=float(item['price']), quantity=servings))
-        added.append(item['name'])
-
-    total = cart_total(ctx.userdata.cart)
-    return f"I've added {', '.join(added)} to your cart for '{dish}'. (Servings: {servings}). Cart total: ₹{total:.2f}"
+    userdata = ctx.userdata
+    userdata.cart = []
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "clear_cart"})
+    return "Your cart has been cleared. What would you like to do next?"
 
 
 @function_tool
 async def place_order(
     ctx: RunContext[Userdata],
-    customer_name: Annotated[str, Field(description="Customer name")],
-    address: Annotated[str, Field(description="Delivery address")],
+    confirm: Annotated[bool, Field(description="Confirm order placement", default=True)] = True,
 ) -> str:
-    if not ctx.userdata.cart:
-        return "Your cart is empty."
-
-    order_id = str(uuid.uuid4())[:8]
-    now = datetime.utcnow().isoformat() + "Z"
-    total = cart_total(ctx.userdata.cart)
-
-    # 1. Persist to DB
-    insert_order_db(order_id=order_id, timestamp=now, total=total, customer_name=customer_name, address=address, status="received", items=ctx.userdata.cart)
-
-    # 2. Clear Cart
-    ctx.userdata.cart = []
-    ctx.userdata.customer_name = customer_name
-
-    # 3. Trigger Background Simulation (Received -> Shipped -> Out for delivery...)
-    try:
-        # create a background task on the running event loop
-        asyncio.create_task(simulate_delivery_flow(order_id))
-    except RuntimeError:
-        # If there is no running loop, schedule on a new loop in a background thread
-        loop = asyncio.new_event_loop()
-        asyncio.get_running_loop() if asyncio.get_event_loop().is_running() else None
-        # fire-and-forget: run in background
-        asyncio.get_event_loop().call_soon_threadsafe(lambda: asyncio.create_task(simulate_delivery_flow(order_id)))
-
-    return f"Order placed successfully! Order ID: {order_id}. Total: \u20B9{total:.2f}. I have initiated express shipping; the status will update automatically shortly."
+    """Create order from session cart and persist. Returns order summary."""
+    userdata = ctx.userdata
+    if not userdata.cart:
+        return "Your cart is empty — nothing to place. Would you like to browse items?"
+    # Build line_items
+    line_items = []
+    for li in userdata.cart:
+        line_items.append({
+            "product_id": li["product_id"],
+            "quantity": li.get("quantity", 1),
+            "attrs": li.get("attrs", {}),
+        })
+    order = create_order_object(line_items)
+    userdata.orders.append(order)
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "place_order", "order_id": order["id"]})
+    # clear cart after order
+    userdata.cart = []
+    return f"Order placed. Order ID {order['id']}. Total {order['total']} {order['currency']}. What would you like to do next?"
 
 
 @function_tool
-async def cancel_order(
+async def last_order(
     ctx: RunContext[Userdata],
-    order_id: Annotated[str, Field(description="Order ID to cancel")],
 ) -> str:
-    o = get_order_db(order_id)
-    if not o:
-        return f"No order found with id {order_id}."
-
-    status = o.get("status", "")
-    if status == "delivered":
-        return f"Order {order_id} has already been delivered and cannot be cancelled."
-
-    if status == "cancelled":
-        return f"Order {order_id} is already cancelled."
-
-    # Update DB
-    update_order_status_db(order_id, "cancelled")
-    return f"Order {order_id} has been cancelled successfully."
-
-
-@function_tool
-async def get_order_status(
-    ctx: RunContext[Userdata],
-    order_id: Annotated[str, Field(description="Order ID to check")],
-) -> str:
-    o = get_order_db(order_id)
-    if not o:
-        return f"No order found with id {order_id}."
-    return f"Order {order_id} status: {o.get('status', 'unknown')}. Updated at: {o.get('updated_at')}"
-
-
-@function_tool
-async def order_history(
-    ctx: RunContext[Userdata],
-    customer_name: Annotated[Optional[str], Field(description="Optional customer name to filter", default=None)] = None,
-) -> str:
-    rows = list_orders_db(limit=5, customer_name=customer_name)
-    if not rows:
-        return "No orders found."
-    lines = []
-    for o in rows:
-        lines.append(f"- {o['order_id']} | \u20B9{o['total']:.2f} | Status: {o.get('status')}")
-    prefix = "Recent Orders"
-    if customer_name:
-        prefix += f" for {customer_name}"
-    return prefix + ":\n" + "\n".join(lines)
+    ord = get_most_recent_order()
+    if not ord:
+        return "You have no past orders yet."
+    lines = [f"Most recent order: {ord['id']} — {ord['created_at']}"]
+    for it in ord['items']:
+        lines.append(f"- {it['name']} x {it['quantity']}: {it['line_total']} {ord['currency']}")
+    lines.append(f"Total: {ord['total']} {ord['currency']}")
+    return "\n".join(lines)
 
 # -------------------------
-# Agent Definition
+# The Agent (Ramu Kaka)
 # -------------------------
-class FoodAgent(Agent):
+class GameMasterAgent(Agent):
     def __init__(self):
+        # System instructions now describe the shopkeeper persona and commerce role
+        instructions = """
+        You are 'Ramu Kaka', the friendly shopkeeper and voice assistant for Dr Abhishek Shop.
+        Universe: A small neighbourhood Indian shop selling mugs, hoodies and tees.
+        Tone: Warm, helpful, slightly jocular; keep sentences short for TTS clarity.
+        Role: Help the customer browse the catalog, add items to cart, place orders, and review recent orders.
+
+        Rules:
+            - Use the provided tools to show the catalog, add items to cart, show the cart, place orders, show last order and clear the cart.
+            - Keep continuity using the per-session userdata. Mention cart contents if relevant.
+            - Drive short voice-first turns suitable for spoken delivery.
+            - When presenting options, include product id and price (e.g. 'mug-001 — 299 INR').
+        """
         super().__init__(
-            instructions="""
-            You are 'Robin', a helpful assistant for 'Dr Abhishek Shop', an Indian grocery store.
-            Currency is Indian Rupees (₹).
-            
-            Capabilities:
-            1. Catalog: Search for Indian items (Amul milk, Tata salt, Maggi, Basmati rice).
-            2. Cart: Add/Remove items, Show cart.
-            3. Recipes: Add ingredients for dishes like Chai, Maggi, Paneer Butter Masala.
-            4. Orders: Place orders.
-            5. Cancellation: You can CANCEL an order if the user asks, provided it's not delivered yet.
-            
-            When placing an order, mention that express tracking is enabled.
-            If user asks "Where is my order?", check status. 
-            The status advances automatically (simulated) so encourage them to check back in a few seconds.
-            """,
-            tools=[find_item, add_to_cart, remove_from_cart, update_cart_quantity, show_cart, add_recipe, place_order, cancel_order, get_order_status, order_history],
+            instructions=instructions,
+            tools=[show_catalog, add_to_cart, show_cart, clear_cart, place_order, last_order],
         )
 
 # -------------------------
-# Entrypoint
+# Entrypoint & Prewarm (keeps speech functionality untouched)
 # -------------------------
 def prewarm(proc: JobProcess):
-    # load VAD model and stash on process userdata
+    # load VAD model and stash on process userdata, try/catch like original file
     try:
         proc.userdata["vad"] = silero.VAD.load()
     except Exception:
@@ -650,8 +729,8 @@ def prewarm(proc: JobProcess):
 
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
-    logger.info("\n" + "🇮🇳" * 12)
-    logger.info("🚀 STARTING DR ABHISHEK SHOP (Indian Context + Auto-Tracking)")
+    logger.info("\n" + "🛍️" * 6)
+    logger.info("🚀 STARTING VOICE E-COMMERCE AGENT (Dr Abhishek Shop) — Ramu Kaka")
 
     userdata = Userdata()
 
@@ -668,8 +747,9 @@ async def entrypoint(ctx: JobContext):
         userdata=userdata,
     )
 
+    # Start the agent session with the GameMasterAgent (Ramu Kaka)
     await session.start(
-        agent=FoodAgent(),
+        agent=GameMasterAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
     )
